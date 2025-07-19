@@ -1,0 +1,368 @@
+#include <WiFi.h>
+#include <ESPAsyncWebServer.h>
+
+// --- PROTOTIPOS
+uint8_t getPinMode(int pin);
+
+// WiFi datos
+const char* ssid = "MotorhomeCentral";
+const char* password = "antural123";
+AsyncWebServer server(80);
+
+// Definición de reles y nombres (NUEVOS PINES)
+const int NUM_RELES = 6;
+const int relePins[NUM_RELES] = {13, 12, 14, 27, 26, 25};
+const char* labels[NUM_RELES] = {
+  "Luz Central", "Luz Habitación", "Alacenas", "Bomba", "Heladera", "Caldera"
+};
+String estadosReles[NUM_RELES] = {"OFF","OFF","OFF","OFF","OFF","OFF"};
+
+// SVG para iconos de los reles (igual que antes)
+const char* ICONOS_RELES[NUM_RELES] = {
+  "<svg width='42' height='42' viewBox='0 0 40 40'><circle cx='20' cy='22' r='10' fill='#ffe355'/><rect x='17' y='6' width='6' height='13' rx='3' fill='#fffbe3'/></svg>",
+  "<svg width='42' height='42' viewBox='0 0 40 40'><rect x='7' y='18' width='26' height='14' rx='6' fill='#ffb300'/><ellipse cx='20' cy='25' rx='10' ry='7' fill='#fffbe3' opacity='.7'/></svg>",
+  "<svg width='42' height='42' viewBox='0 0 40 40'><rect x='8' y='10' width='24' height='20' rx='3' fill='#b09560'/><rect x='11' y='13' width='8' height='14' rx='1.8' fill='#d8c798'/><rect x='21' y='13' width='8' height='14' rx='1.8' fill='#f4eac3'/></svg>",
+  "<svg width='42' height='42' viewBox='0 0 40 40'><ellipse cx='20' cy='30' rx='11' ry='6' fill='#6bd2ff'/><rect x='16' y='7' width='8' height='20' rx='4' fill='#fff'/></svg>",
+  "<svg width='42' height='42' viewBox='0 0 40 40'><rect x='11' y='9' width='18' height='24' rx='4' fill='#a3e6f5'/><rect x='11' y='21' width='18' height='7' rx='2' fill='#fff' opacity='.7'/></svg>",
+  "<svg width='42' height='42' viewBox='0 0 40 40'><ellipse cx='20' cy='27' rx='10' ry='6' fill='#ffac6d'/><path d='M16 25 Q20 15 24 25' stroke='#e13e2d' stroke-width='2' fill='none'/></svg>"
+};
+
+// --- Pines sensores ---
+#define I2C_SDA 21
+#define I2C_SCL 22
+#define TQ1_ADC 36
+#define TQ2_ADC 39
+#define TQ3_ADC 34
+#define DHT_PIN 32
+#define MQ2_ADC 35
+
+// --- SENSORES Y TANQUES (Simulados)
+int tankVals[3] = {74, 51, 17};
+String tankColors[3] = {"#31c3fc", "#a3a9b7", "#40322a"};
+String tankNames[3] = {"Blancas", "Grises", "Negras"};
+String tempInt = "25.6", tempExt = "29.1";
+String presion = "1013"; // hPa
+String altitud = "650"; // m
+String airQ = "Buena";
+String mq2 = "0 ppm";
+
+// --- BMS Daly Simulado ---
+String bat_soc = "82%";
+String bat_volt = "13.2V";
+String bat_current = "3.2A";
+String bat_temp = "27 C";
+String bat_cycles = "140";
+String bat_status = "Carga";
+String bat_balance = "ON";
+
+// --- SVG icons para sensores
+const char* SVG_TERMOMETRO = "<svg width='34' height='34' viewBox='0 0 32 32'><circle cx='16' cy='22' r='8' fill='#e46d27'/><rect x='13' y='5' width='6' height='14' rx='3' fill='#fff' stroke='#e46d27' stroke-width='2'/></svg>";
+const char* SVG_BARO = "<svg width='34' height='34' viewBox='0 0 32 32'><circle cx='16' cy='16' r='13' fill='#55b2f2'/><polyline points='8,20 16,12 24,20' fill='none' stroke='#fff' stroke-width='2'/></svg>";
+const char* SVG_MONTANA = "<svg width='34' height='34' viewBox='0 0 32 32'><ellipse cx='16' cy='24' rx='12' ry='6' fill='#89d06a'/><rect x='13' y='7' width='6' height='17' rx='3' fill='#fff'/></svg>";
+const char* SVG_AIRE = "<svg width='34' height='34' viewBox='0 0 32 32'><circle cx='16' cy='16' r='13' fill='#eee12d'/><path d='M10,18 Q16,10 22,18' stroke='#fff' stroke-width='2' fill='none'/></svg>";
+const char* SVG_FUEGO = "<svg width='34' height='34' viewBox='0 0 32 32'><rect x='8' y='20' width='16' height='7' rx='3' fill='#e13e2d'/><rect x='13' y='6' width='6' height='16' rx='3' fill='#fff'/></svg>";
+
+String sensorCardHTML(const char* svgIcon, const char* name, const char* value, const char* units, const char* color) {
+  return String() +
+    "<div class='sensor-card'><div class='svgwrap'>" + String(svgIcon) + "</div>"
+      "<div class='label'>" + String(name) + "</div>"
+      "<div class='value' style='color:" + String(color) + ";'>" + String(value) + "<span class='units'>" + String(units) + "</span></div>"
+    "</div>";
+}
+
+// --- BMS Daly Card (simulada)
+String bmsCardHTML() {
+  return String() +
+    "<div class='bms-battery'>"
+      "<div class='bms-col1'>"
+        "<svg class='bat-svg' width='70' height='120' viewBox='0 0 38 72'><rect x='3' y='10' width='32' height='55' rx='12' fill='#141e2b' stroke='#eee' stroke-width='2'/><rect x='12' y='5' width='14' height='7' rx='4' fill='#d1d4db'/><rect x='5' y='12' width='28' height='" + String((int)(55 * (0.01 * bat_soc.toInt()))) + "' y='" + String(67 - (int)(55 * (0.01 * bat_soc.toInt()))) + "' rx='9' fill='#21e03d' style='transition:all 0.7s;'/></svg>"
+        "<div class='bms-mainval'>" + bat_soc + "</div>"
+        "<div class='bms-status " + String((bat_balance == "ON") ? "bms-bal" : "") + "'>" + bat_status + "</div>"
+      "</div>"
+      "<div class='bms-col2'>"
+        "<div><b>Volt:</b> " + bat_volt + "</div>"
+        "<div><b>Corriente:</b> " + bat_current + "</div>"
+        "<div><b>Temp:</b> " + bat_temp + "</div>"
+        "<div><b>Ciclos:</b> " + bat_cycles + "</div>"
+        "<div><b>Balanceo:</b> " + bat_balance + "</div>"
+      "</div>"
+    "</div>";
+}
+
+// --- Nueva Card de TANQUES (igual que antes)
+String tanquesCardHTML() {
+  String card =
+    "<div class='tanque-card mejorada'>"
+      "<div class='tq-title'>Tanques</div>"
+      "<div class='tqbars-big'>";
+  for (int i = 0; i < 3; i++) {
+    int altura = 180 * tankVals[i] / 100;
+    card +=
+      "<div class='tq-item-big'>"
+        "<div class='tq-ico-big'>"
+          "<svg width='50' height='70' viewBox='0 0 36 50'><path d='M18 2 C26 16 34 26 34 36 A16 16 0 1 1 2 36 C2 26 10 16 18 2Z' fill='" + tankColors[i] + "' stroke='#aaa' stroke-width='2' opacity='0.25'/></svg>"
+        "</div>"
+        "<div class='tq-barwrap-big'>"
+          "<svg width='82' height='190'>"
+            "<rect x='10' y='5' width='22' height='180' rx='10' fill='#242f43' stroke='#bdbdbd' stroke-width='2'/>"
+            "<rect x='10' y='" + String(185 - altura + 5) + "' width='22' height='" + String(altura) + "' rx='10' fill='" + tankColors[i] + "' style='transition:all 1s;'/>"
+          "</svg>"
+        "</div>"
+        "<div class='tq-label-big'>" + tankNames[i] + "</div>"
+        "<div class='tq-perc-big'><b>" + String(tankVals[i]) + "%</b></div>"
+      "</div>";
+  }
+  card += "</div></div>";
+  return card;
+}
+
+// ---- RELÉ: lógica por GPIO modo INPUT/OUTPUT LOW ----
+uint8_t pinModeStates[NUM_RELES] = {INPUT, INPUT, INPUT, INPUT, INPUT, INPUT};
+
+uint8_t getPinMode(int pin) {
+  for (int i = 0; i < NUM_RELES; i++) {
+    if (relePins[i] == pin) return pinModeStates[i];
+  }
+  return INPUT;
+}
+
+void leerEstadosReles() {
+  for (int i = 0; i < NUM_RELES; i++) {
+    uint8_t estadoPin = digitalRead(relePins[i]);
+    if (getPinMode(relePins[i]) == OUTPUT && estadoPin == LOW) {
+      estadosReles[i] = "ON";
+    } else {
+      estadosReles[i] = "OFF";
+    }
+  }
+}
+
+void setRele(int idx, bool on) {
+  if (on) {
+    pinMode(relePins[idx], OUTPUT);
+    digitalWrite(relePins[idx], LOW); // ON
+    pinModeStates[idx] = OUTPUT;
+  } else {
+    pinMode(relePins[idx], INPUT); // OFF (flotante)
+    pinModeStates[idx] = INPUT;
+  }
+}
+
+void toggleRele(int channel) {
+  if (channel >= 1 && channel <= NUM_RELES) {
+    int idx = channel - 1;
+    bool estabaOn = (estadosReles[idx] == "ON");
+    setRele(idx, !estabaOn);
+    estadosReles[idx] = (!estabaOn) ? "ON" : "OFF";
+    Serial.printf("[DEBUG] Relé %d (%s): %s\n", channel, labels[idx], estadosReles[idx].c_str());
+  }
+}
+
+// ---- HTML principal extendido y responsive ----
+String htmlPage() {
+  String estadoVals = "";
+  for (int i=0; i<NUM_RELES; i++) {
+    estadoVals += "'" + estadosReles[i] + "'";
+    if (i < NUM_RELES-1) estadoVals += ",";
+  }
+
+  // --- Relay cards HTML (estéticas, con iconos)
+  String relayCards = "";
+  for (int i=0; i<NUM_RELES; i++) {
+    String cardClass = String("relaycard ") + (estadosReles[i]=="ON"?"on":"off");
+    String btnClass = String("relaybtn ") + (estadosReles[i]=="ON"?"":"off");
+    relayCards += "<div class='" + cardClass + "' id='relaycard" + String(i+1) + "'>"
+                    "<div class='relayicon'>" + String(ICONOS_RELES[i]) + "</div>"
+                    "<div class='relaylabel'>" + String(labels[i]) + "</div>"
+                    "<button class='" + btnClass + "' id='btn" + String(i+1) + "' onclick='toggle(" + String(i+1) + ")'>" +
+                      (estadosReles[i]=="ON"?"Apagar":"Encender") +
+                    "</button></div>";
+  }
+
+  String html = R"rawliteral(
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Antural Motorhome</title>
+      <meta name='viewport' content='width=device-width, initial-scale=1'>
+      <style>
+        :root { --primary:#1fc800; --danger:#d30e0e; --card:#232a3b; --bg:#181f2a; }
+        body { font-family: 'Segoe UI',Roboto,sans-serif; background:var(--bg); color:#eee; margin:0;}
+        h1 { margin:18px 0 16px 0; font-size:2.1em; letter-spacing:2px; text-align:center;}
+        .relaygrid {display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:18px; max-width:960px; margin:16px auto 14px auto;}
+        .relaycard {
+          background:var(--card); border-radius:20px; min-height:148px;
+          display:flex; flex-direction:column; align-items:center; justify-content:center;
+          box-shadow: 1px 2px 9px #0005; transition:box-shadow .2s;
+          border: 2px solid transparent;
+        }
+        .relaycard.on { box-shadow:0 0 0 2.5px var(--primary) inset;}
+        .relaycard.off { box-shadow:0 0 0 2.5px var(--danger) inset;}
+        .relayicon {margin-top:11px;}
+        .relaylabel {font-size:1.11em; margin-top:10px; margin-bottom:7px; font-weight:500;}
+        .relaybtn {
+          margin:10px 0 15px 0; font-size:1em; border-radius:14px; padding:7px 16px;
+          border:none; color:#fff; font-weight:600; cursor:pointer;
+          background:linear-gradient(90deg,var(--primary),#2cfc74); box-shadow:1px 2px 10px #0005;
+          transition: background .2s;
+        }
+        .relaybtn.off {background:linear-gradient(90deg,var(--danger),#fc6c3d);}
+        .tanque-card.mejorada {
+          background:var(--card); border-radius:26px; box-shadow:0 4px 24px #0008;
+          padding:20px 30px 12px 30px; max-width:900px; margin:28px auto 20px auto;
+        }
+        .tq-title { font-size:1.4em; font-weight:700; text-align:center; margin-bottom:18px; letter-spacing:2px;}
+        .tqbars-big { display:flex; justify-content:center; align-items:end; gap:36px; }
+        .tq-item-big { display:flex; flex-direction:column; align-items:center; margin:0 12px;}
+        .tq-ico-big {margin-bottom:-8px;}
+        .tq-barwrap-big {margin-bottom:10px;}
+        .tq-label-big { font-size:1.08em; color:#d3d3d3; margin-top:3px;}
+        .tq-perc-big {font-size:2.15em; margin-top:2px; color:#fff; font-weight:800; letter-spacing:1px; text-shadow: 0 2px 8px #0008;}
+        @media (max-width:850px) {.tqbars-big{gap:14px;} .tanque-card.mejorada{padding:10px 2vw 6px 2vw;}}
+        @media (max-width:600px) {.tqbars-big{gap:4px;} .tanque-card.mejorada{padding:5px 1vw 3px 1vw;}}
+
+        .sensor-cards {
+          display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
+          gap:14px; margin: 15px auto 10px auto; max-width:1050px; padding: 0 12px;
+        }
+        .sensor-card {
+          background:var(--card); border-radius:18px; padding:15px 10px 10px 10px;
+          min-width:150px; min-height:120px; display:flex; flex-direction:column; align-items:center;
+          box-shadow:1px 2px 10px #0006;
+        }
+        .svgwrap {height:40px; margin-bottom:5px;}
+        .label { font-size:1.1em; color:#e4e4e4; margin-bottom:6px;}
+        .value { font-size:2em; font-weight:700;}
+        .units { font-size:.7em; margin-left:3px;}
+        .bms-section { margin: 22px auto 8px auto; max-width: 650px;}
+        .bms-battery {
+          display:flex; gap:20px; align-items:center; background:var(--card);
+          border-radius:22px; box-shadow:0 2px 16px #0006; padding:20px 24px; flex-wrap:wrap; justify-content:center;
+        }
+        .bat-svg {margin-right:10px;}
+        .bms-col1 { text-align:center;}
+        .bms-mainval { font-size:2.1em; margin-top:8px;}
+        .bms-status { font-size:1.1em; margin-top:3px;}
+        .bms-col2 { margin-left:18px; font-size:1.05em; }
+        .bms-bal { color:#19f06e; font-weight:bold;}
+        @media (max-width:850px) {.relaygrid {grid-template-columns:repeat(auto-fit,minmax(170px,1fr));}}
+        @media (max-width:650px) {.bms-battery { flex-direction:column; align-items:center; } .bms-col2 { margin-left:0; margin-top:8px;} .tanque-card {padding:12px 3px 3px 3px;}}
+        @media (max-width:520px) {.sensor-cards {gap:7px;} .relaygrid {gap:7px;} .tanque-card {padding:5px 1px 1px 1px;} }
+      </style>
+      <script>
+        var estados = [%ESTADOS%];
+        function setRelayState(ch,state) {
+          let card = document.getElementById('relaycard'+ch);
+          let btn = document.getElementById('btn'+ch);
+          if(card) card.className = 'relaycard ' + (state=='ON'?'on':'off');
+          if(btn) btn.className = 'relaybtn ' + (state=='ON'?'':'off');
+          if(btn) btn.textContent = (state=='ON') ? 'Apagar' : 'Encender';
+        }
+        function toggle(ch) {
+          estados[ch-1] = (estados[ch-1] == 'ON') ? 'OFF' : 'ON';
+          setRelayState(ch, estados[ch-1]);
+          fetch('/toggle4ch?ch='+ch).then(_=> {/* Nada */});
+        }
+        function updateEstados() {
+          fetch('/estados').then(res=>res.json()).then(j=>{
+            for (let i=1;i<=%NRELES%;i++) {
+              estados[i-1] = j['ch'+i];
+              setRelayState(i, estados[i-1]);
+            }
+          });
+        }
+        setInterval(updateEstados, 3000);
+        window.onload = () => {
+          for(let i=1;i<=%NRELES%;i++) setRelayState(i, estados[i-1]);
+          updateEstados();
+        };
+      </script>
+    </head>
+    <body>
+      <h1>Antural Motorhome</h1>
+      <div class='relaygrid'>
+        %RELAYCARDS%
+      </div>
+      <div class='bms-section'>
+        %BMSCARD%
+      </div>
+      %TANQUECARD%
+      <div class='sensor-cards'>
+        %CARD1%%CARD2%%CARD3%%CARD4%%CARD5%%CARD6%
+      </div>
+    </body>
+    </html>
+  )rawliteral";
+
+  html.replace("%RELAYCARDS%", relayCards);
+  html.replace("%ESTADOS%", estadoVals);
+  html.replace("%NRELES%", String(NUM_RELES));
+  html.replace("%BMSCARD%", bmsCardHTML());
+  html.replace("%TANQUECARD%", tanquesCardHTML());
+  html.replace("%CARD1%", sensorCardHTML(SVG_TERMOMETRO, "Temp. Int.", tempInt.c_str(), " C", "#e46d27"));
+  html.replace("%CARD2%", sensorCardHTML(SVG_TERMOMETRO, "Temp. Ext.", tempExt.c_str(), " C", "#e46d27"));
+  html.replace("%CARD3%", sensorCardHTML(SVG_BARO, "Presion", presion.c_str(), "hPa", "#55b2f2"));
+  html.replace("%CARD4%", sensorCardHTML(SVG_MONTANA, "Altitud", altitud.c_str(), "m", "#89d06a"));
+  html.replace("%CARD5%", sensorCardHTML(SVG_AIRE, "Calidad Aire", airQ.c_str(), "", "#eee12d"));
+  html.replace("%CARD6%", sensorCardHTML(SVG_FUEGO, "Gas (MQ2)", mq2.c_str(), "", "#e13e2d"));
+
+  return html;
+}
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("[DEBUG] Iniciando WiFi AP...");
+  WiFi.softAP(ssid, password);
+  delay(200);
+  WiFi.softAPConfig(IPAddress(192,168,0,50), IPAddress(192,168,0,50), IPAddress(255,255,255,0));
+  Serial.println("[DEBUG] AP configurado. IP: 192.168.0.50");
+
+  // --- Inicializar todos los relés en modo INPUT (apagados)
+  for (int i = 0; i < NUM_RELES; i++) {
+    pinMode(relePins[i], INPUT); // OFF
+    pinModeStates[i] = INPUT;
+  }
+  leerEstadosReles();
+
+  // --- Inicializar pines sensores ---
+  pinMode(I2C_SDA, INPUT_PULLUP);
+  pinMode(I2C_SCL, INPUT_PULLUP);
+  // Los ADCs no requieren pinMode, pero sí pueden inicializarse sensores luego
+
+  pinMode(DHT_PIN, INPUT_PULLUP);  // Cuando se sume la librería DHT
+  pinMode(MQ2_ADC, INPUT);         // ADC
+
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    Serial.println("[DEBUG] GET / (pagina principal)");
+    request->send(200, "text/html", htmlPage());
+  });
+  server.on("/toggle4ch", HTTP_GET, [](AsyncWebServerRequest *request){
+    if (request->hasParam("ch")) {
+      int ch = request->getParam("ch")->value().toInt();
+      if (ch >= 1 && ch <= NUM_RELES) {
+        Serial.println("[DEBUG] Toggle solicitado desde web: canal " + String(ch));
+        toggleRele(ch);
+        leerEstadosReles();
+      }
+    }
+    request->send(200, "text/plain", "OK");
+  });
+  server.on("/estados", HTTP_GET, [](AsyncWebServerRequest *request){
+    Serial.println("[DEBUG] Consulta de estados por AJAX /estados");
+    leerEstadosReles();
+    String json = "{";
+    for (int i=0; i<NUM_RELES; i++) {
+      json += "\"ch"+String(i+1)+"\":\""+estadosReles[i]+"\"";
+      if (i<NUM_RELES-1) json += ",";
+    }
+    json += "}";
+    request->send(200, "application/json", json);
+  });
+  server.begin();
+  Serial.println("[DEBUG] Servidor HTTP iniciado.");
+}
+
+void loop() {
+  // Nada necesario aquí por ahora
+}
+

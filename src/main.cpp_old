@@ -1,0 +1,70 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ESPAsyncWebServer.h>
+
+const char* ssid = "MotorhomeCentral";
+const char* password = "antural123";
+
+AsyncWebServer server(80);
+
+bool rele = false;  // Estado actual del relé
+
+// Endpoint para recibir estado del relé desde Tasmota
+void handleReleState(AsyncWebServerRequest *request) {
+  String state = "";
+  if (request->hasParam("state")) {
+    state = request->getParam("state")->value();
+    rele = (state == "ON");
+  }
+  request->send(200, "text/plain", "OK");
+}
+
+// Endpoint para prender/apagar el relé Tasmota con TOGGLE
+void handleReleToggle(AsyncWebServerRequest *request) {
+  if (request->hasParam("ip")) {
+    String ip = request->getParam("ip")->value();
+
+    // Comando HTTP para Tasmota: Power TOGGLE
+    String url = "http://" + ip + "/cm?cmnd=Power%20TOGGLE";
+    HTTPClient http;
+    http.begin(url);
+    int httpCode = http.GET();
+    http.end();
+
+    // Hacemos un "redirect" manual con meta refresh:
+    String html = "<html><head><meta http-equiv='refresh' content='0;url=/' /></head><body>Redirigiendo...</body></html>";
+    request->send(200, "text/html", html);
+  } else {
+    request->send(400, "text/plain", "Missing parameters");
+  }
+}
+
+
+void setup() {
+  Serial.begin(115200);
+  WiFi.softAP(ssid, password);
+  Serial.println("AP iniciado: MotorhomeCentral");
+
+  // Página principal solo muestra el botón correspondiente según estado
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    String html = "<h1>Relé Simple Tasmota</h1>";
+    html += "<p>Estado: <b style='color:" + String(rele ? "green" : "red") + "'>" + (rele ? "ON" : "OFF") + "</b></p>";
+    html += "<form action='/api/rele_toggle' method='get'>";
+    html += "IP Tasmota: <input name='ip' value='192.168.4.2'><br>";
+    if (rele)
+      html += "<button type='submit'>Apagar</button>";
+    else
+      html += "<button type='submit'>Encender</button>";
+    html += "</form>";
+    request->send(200, "text/html", html);
+  });
+
+  server.on("/api/rele_state", HTTP_GET, handleReleState);
+  server.on("/api/rele_toggle", HTTP_GET, handleReleToggle);
+
+  server.begin();
+}
+
+void loop() {}
+

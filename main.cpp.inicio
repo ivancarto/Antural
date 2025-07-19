@@ -1,0 +1,161 @@
+#include <WiFi.h>
+#include <ESPAsyncWebServer.h>
+#include <HTTPClient.h>
+
+const char* ssid = "MotorhomeCentral";
+const char* password = "antural123";
+
+AsyncWebServer server(80);
+
+const char* RELE4CH_IP = "192.168.0.14";
+const char* labels[4] = {"Luces", "Bomba", "Heladera", "Caldera"};
+
+String estados4ch[4] = {"OFF", "OFF", "OFF", "OFF"};
+unsigned long lastUpdate = 0;
+
+void actualizarEstados() {
+  HTTPClient http;
+  String url = String("http://") + RELE4CH_IP + "/cm?cmnd=Status%200";
+  http.begin(url);
+  int httpCode = http.GET();
+  if (httpCode == 200) {
+    String payload = http.getString();
+    for (int i = 0; i < 4; i++) {
+      String key = "\"POWER" + String(i+1) + "\":\"";
+      int idx = payload.indexOf(key);
+      if (idx > 0) {
+        int valStart = idx + key.length();
+        int valEnd = payload.indexOf("\"", valStart);
+        estados4ch[i] = payload.substring(valStart, valEnd);
+      }
+    }
+  }
+  http.end();
+}
+
+void toggleTasmota(int channel) {
+  HTTPClient http;
+  String url = String("http://") + RELE4CH_IP + "/cm?cmnd=Power" + String(channel) + "%20Toggle";
+  http.begin(url);
+  http.GET();
+  http.end();
+}
+
+String htmlPage() {
+  String colores[4];
+  for (int i = 0; i < 4; i++) {
+    colores[i] = (estados4ch[i] == "ON") ? "#1fc800" : "#d30e0e";
+  }
+  String estadoVals = "";
+  for (int i=0; i<4; i++) {
+    estadoVals += "'" + estados4ch[i] + "'";
+    if (i<3) estadoVals += ",";
+  }
+
+  String html = R"rawliteral(
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Antural Motorhome Central</title>
+      <meta name='viewport' content='width=device-width, initial-scale=1'>
+      <style>
+        body { font-family: sans-serif; background:#181f2a; color: #eee; }
+        .rele { margin: 25px 0; padding: 18px; background: #252e3e; border-radius: 20px; box-shadow: 2px 4px 18px #0007;}
+        h1 { margin-bottom:20px;}
+        button {
+          font-size: 1.2em;
+          padding: 16px 32px;
+          border-radius: 14px;
+          border: none;
+          margin-top: 8px;
+          width: 220px;
+          color: #fff;
+          font-weight: bold;
+          transition: background 0.2s;
+        }
+        .centered { text-align:center;}
+      </style>
+      <script>
+        var estados = [%ESTADOS%];
+
+        function setBtnColor(ch) {
+          let btn = document.getElementById('btn'+ch);
+          btn.style.background = (estados[ch-1]=='ON') ? "#1fc800" : "#d30e0e";
+        }
+
+        function toggle(ch) {
+          // Invertir estado visual local inmediato
+          estados[ch-1] = (estados[ch-1] == 'ON') ? 'OFF' : 'ON';
+          setBtnColor(ch);
+          fetch('/toggle4ch?ch='+ch)
+            .then(_=> {/* Nada */});
+        }
+
+        function updateEstados() {
+          fetch('/estados').then(res=>res.json()).then(j=>{
+            for (let i=1;i<=4;i++) {
+              estados[i-1] = j['ch'+i];
+              setBtnColor(i);
+            }
+          });
+        }
+        setInterval(updateEstados, 20000);
+        window.onload = updateEstados;
+      </script>
+    </head>
+    <body>
+      <h1 class='centered'>Antural Motorhome Central</h1>
+      <div class='rele centered'>
+        %BOTONES%
+      </div>
+    </body>
+    </html>
+  )rawliteral";
+
+  String botones = "";
+  for (int i=0; i<4; i++) {
+    botones += "<button id='btn"+String(i+1)+"' style='background:"+colores[i]+";' onclick='toggle("+(i+1)+")'>"+String(labels[i])+"</button><br><br>";
+  }
+  html.replace("%BOTONES%", botones);
+  html.replace("%ESTADOS%", estadoVals);
+  return html;
+}
+
+void setup() {
+  Serial.begin(115200);
+  WiFi.softAP(ssid, password);
+  delay(200);
+  WiFi.softAPConfig(IPAddress(192,168,0,50), IPAddress(192,168,0,50), IPAddress(255,255,255,0));
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(200, "text/html", htmlPage());
+  });
+  server.on("/toggle4ch", HTTP_GET, [](AsyncWebServerRequest *request){
+    if (request->hasParam("ch")) {
+      int ch = request->getParam("ch")->value().toInt();
+      if (ch >= 1 && ch <= 4) {
+        toggleTasmota(ch);
+      }
+    }
+    request->send(200, "text/plain", "OK");
+  });
+  server.on("/estados", HTTP_GET, [](AsyncWebServerRequest *request){
+    String json = "{";
+    for (int i=0; i<4; i++) {
+      json += "\"ch"+String(i+1)+"\":\""+estados4ch[i]+"\"";
+      if (i<3) json += ",";
+    }
+    json += "}";
+    request->send(200, "application/json", json);
+  });
+  server.begin();
+  actualizarEstados();
+  lastUpdate = millis();
+}
+
+void loop() {
+  if (millis() - lastUpdate > 20000) {
+    actualizarEstados();
+    lastUpdate = millis();
+  }
+}
+
