@@ -4,6 +4,8 @@
   - Control de 6 relés vía web (activo bajo)
   - Visualización de sensores reales BMP280, con actualización automática AJAX
   - Niveles de tanques y batería, todo en diseño moderno responsive
+  - Descubrimiento automático por mDNS
+  - Endpoint JSON /status para apps externas
 */
 
 #include <WiFi.h>
@@ -11,6 +13,7 @@
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BMP280.h>
+#include <ESPmDNS.h>  // <--- para mDNS
 
 // --- WiFi AP ---
 const char* ssid = "MotorhomeCentral";
@@ -61,6 +64,7 @@ const char* SVG_BARO = "<svg width='34' height='34'><circle cx='16' cy='16' r='1
 const char* SVG_MONTANA = "<svg width='34' height='34'><ellipse cx='16' cy='24' rx='12' ry='6' fill='#89d06a'/></svg>";
 const char* SVG_AIRE = "<svg width='34' height='34'><circle cx='16' cy='16' r='13' fill='#eee12d'/></svg>";
 const char* SVG_FUEGO = "<svg width='34' height='34'><rect x='8' y='20' width='16' height='7' rx='3' fill='#e13e2d'/></svg>";
+
 
 // --- FUNCIONES AUXILIARES DE UI ---
 String sensorCardHTML(const char* svgIcon, const char* name, const char* value, const char* units, const char* color) {
@@ -382,6 +386,15 @@ void setup() {
     Serial.println("BMP280 inicializado OK.");
   }
 
+  // ---- INICIA mDNS ----
+  if (!MDNS.begin("motorhome")) {
+    Serial.println("[mDNS] Error al iniciar mDNS responder!");
+  } else {
+    Serial.println("[mDNS] Respondiendo en: http://motorhome.local/");
+    // También podés agregar servicios personalizados si querés, ej:
+    // MDNS.addService("http", "tcp", 80);
+  }
+
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "text/html", htmlPage());
   });
@@ -404,7 +417,6 @@ void setup() {
     json += "}";
     request->send(200, "application/json", json);
   });
-  // ---- ENDPOINT PARA SENSORES AMBIENTE
   server.on("/sensores", HTTP_GET, [](AsyncWebServerRequest *request){
     String json = "{";
     json += "\"tempInt\":\"" + tempInt + "\",";
@@ -416,6 +428,26 @@ void setup() {
     json += "}";
     request->send(200, "application/json", json);
   });
+  // ---- ENDPOINT GLOBAL /status PARA APP EXTERNA/FLUTTER ----
+  server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request){
+    // Ejemplo de JSON, podés agregar o quitar lo que quieras
+    String json = "{";
+    json += "\"relays\":[" + String((digitalRead(5)==LOW)?"1":"0") + "," + String((digitalRead(12)==LOW)?"1":"0") + "," + String((digitalRead(14)==LOW)?"1":"0") + "," + String((digitalRead(27)==LOW)?"1":"0") + "," + String((digitalRead(26)==LOW)?"1":"0") + "," + String((digitalRead(25)==LOW)?"1":"0") + "],";
+    json += "\"tankVals\":[" + String(tankVals[0]) + "," + String(tankVals[1]) + "," + String(tankVals[2]) + "],";
+    json += "\"bat_soc\":\"" + bat_soc + "\",";
+    json += "\"bat_volt\":\"" + bat_volt + "\",";
+    json += "\"bat_current\":\"" + bat_current + "\",";
+    json += "\"bat_temp\":\"" + bat_temp + "\",";
+    json += "\"bat_cycles\":\"" + bat_cycles + "\",";
+    json += "\"tempInt\":\"" + tempInt + "\",";
+    json += "\"presion\":\"" + presion + "\",";
+    json += "\"altitud\":\"" + altitud + "\",";
+    json += "\"airQ\":\"" + airQ + "\",";
+    json += "\"mq2\":\"" + mq2 + "\"";
+    json += "}";
+    request->send(200, "application/json", json);
+  });
+
   server.begin();
   Serial.println("[DEBUG] Servidor HTTP iniciado.");
 }
@@ -438,4 +470,3 @@ void loop() {
     }
   }
 }
-
